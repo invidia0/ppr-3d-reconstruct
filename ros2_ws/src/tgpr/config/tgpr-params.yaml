@@ -1,3 +1,4 @@
 trajectory_prediction:
   ros__parameters:
     measurement_topic: "pose_measurements"
+    dataset_history: 10
