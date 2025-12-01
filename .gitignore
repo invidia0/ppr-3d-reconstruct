@@ -1,0 +1,15 @@
+# ROS 2 colcon build artefacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code local stuff
+.vscode/
+*.code-workspace
+
+# Devcontainer / Docker extension cache (not your files)
+.devcontainer/data/

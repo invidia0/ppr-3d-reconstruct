@@ -1,0 +1,25 @@
+# docker/Dockerfile.dev
+FROM operator/ros-jazzy-sim:latest
+
+ARG USERNAME=operator
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    git \
+    vim \
+    htop \
+    bash-completion \
+    # any other dev tools
+    && rm -rf /var/lib/apt/lists/*
+
+SHELL ["/bin/bash", "-lc"]
+
+# (Optional) dev-specific shell config for operator
+# RUN echo 'some dev-only alias or env var' >> /home/${USERNAME}/.bashrc \
+#  && chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.bashrc   
+
+USER ${USERNAME}
+WORKDIR /workspaces/ros2_ws

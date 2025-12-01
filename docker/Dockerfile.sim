@@ -1,0 +1,24 @@
+# docker/Dockerfile.sim
+FROM operator/ros-jazzy-base:latest
+
+ARG USERNAME=operator
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    ros-jazzy-cartographer \
+    ros-jazzy-cartographer-ros \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
+    && rm -rf /var/lib/apt/lists/*
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN echo 'source /workspaces/ros2_ws/install/setup.bash' >> /home/${USERNAME}/.bashrc \
+ && echo 'export TURTLEBOT3_MODEL=burger' >> /home/${USERNAME}/.bashrc \
+ && chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.bashrc
+ 
+USER ${USERNAME}
+WORKDIR /workspaces/ros2_ws

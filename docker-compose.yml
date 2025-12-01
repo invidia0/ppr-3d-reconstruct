@@ -1,0 +1,83 @@
+services:
+  base: # Build only
+    image: operator/ros-jazzy-base:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.base
+    profiles: ["build-only"]
+  # base:
+  #     image: operator/ros-jazzy-base:latest
+  #     build:
+  #       context: .
+  #       dockerfile: docker/Dockerfile.base
+  #     container_name: ros-base
+  #     hostname: ros-base
+  #     user: "operator"
+  #     volumes:
+  #       - ./ros2_ws:/workspaces/ros2_ws:cached
+  #     environment:
+  #       - DISPLAY=${DISPLAY}
+  #       - ROS_DOMAIN_ID=42
+  #     command: bash -lc "tail -f /dev/null"
+  #     networks:
+  #       - rosnet
+  #     deploy:
+  #       resources:
+  #         reservations:
+  #           devices:
+  #             - driver: nvidia
+  #               count: all
+  #               capabilities: [gpu]
+  sim:
+    image: operator/ros-jazzy-sim:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sim
+    container_name: ros-sim
+    hostname: ros-sim
+    user: "operator"
+    volumes:
+      - ./ros2_ws:/workspaces/ros2_ws:cached
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=42
+      - TURTLEBOT3_MODEL=burger
+    command: bash -lc "tail -f /dev/null"
+    networks:
+      - rosnet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  dev:
+    image: operator/ros-jazzy-dev:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    container_name: ros-dev
+    volumes:
+      - ./ros2_ws:/workspaces/ros2_ws:cached
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=42
+      - TURTLEBOT3_MODEL=burger
+    command: bash -lc "tail -f /dev/null"
+    hostname: ros-dev
+    user: "operator"
+    networks:
+      - rosnet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+networks:
+  rosnet: {}

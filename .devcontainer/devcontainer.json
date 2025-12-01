@@ -1,0 +1,26 @@
+{
+  "name": "ros2-jazzy-dev",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "dev",
+  "runServices": ["dev"],
+  "workspaceFolder": "/workspaces/ros2_ws",
+
+  "remoteUser": "operator", // or create a non-root user in Dockerfile.dev
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-iot.vscode-ros",
+        "ms-vscode.cpptools",
+        "ms-python.python",
+        "ms-azuretools.vscode-docker",
+        "eamodio.gitlens",
+        "github.copilot",
+        "github.copilot-chat"
+      ]
+    }
+  },
+
+  // Optional: run after container starts
+  "postCreateCommand": "bash -lc 'source ~/.bashrc && colcon build --symlink-install || true'"
+}
