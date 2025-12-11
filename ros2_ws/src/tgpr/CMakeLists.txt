@@ -16,6 +16,11 @@ find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 # # Include Cpp "include" directory
 # include_directories(include)
@@ -31,7 +36,12 @@ find_package(geometry_msgs REQUIRED)
 #   cpp_executable
 #   DESTINATION lib/${PROJECT_NAME}
 # )
-
+install(DIRECTORY
+  launch
+  rviz
+  config
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})
@@ -40,6 +50,7 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/trajectory_prediction.py
+  scripts/traj_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

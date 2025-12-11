@@ -1,0 +1,12 @@
+traj_publisher:
+  ros__parameters:
+    pose_topic: 'vrpn_mocap/TB1/pose'
+    cmd_vel_topic: 'TB1/cmd_vel'
+    figure_8_scale: 1.5
+    kp_v: 1.0
+    ki_v: 0.0
+    max_velocity: 0.18
+    kp_omega: 0.5
+    ki_omega: 0.0
+    max_angular_velocity: 1.0  
+    pure_pursuit_lookahead: 0.5

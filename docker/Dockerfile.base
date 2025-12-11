@@ -37,6 +37,8 @@ RUN apt-get update && apt-get install -y \
     cmake \
     git \
     wget \
+    net-tools \
+    iputils-ping \
     curl \
     vim \
     nano \

@@ -41,20 +41,23 @@ class TrajPred(Node):
         # Jax setup
         self.key = jax.random.PRNGKey(0)
 
-        self.tgpr_model = TGPR(dataset_history=_dataset_history)
-
-        self.tgpr_model.hello()
+        self.tgpr = TGPR(dataset_history=_dataset_history,
+                        sigma_v=0.1,
+                        sigma_w=0.1,
+                        C_single=jnp.eye(3),
+                        K0=jnp.eye(3)*0.01,
+                        R=jnp.eye(3)*0.01)
 
 
     def measurements_callback(self, msg: PoseStamped):
-        pass
-    # def timer_callback(self):
-    #     msg = String()
-    #     msg.data = 'Hello World: %d' % self.i
-    #     self.publisher_.publish(msg)
-    #     self.get_logger().info('Publishing: "%s"' % msg.data)
-    #     self.i += 1
+        # Extract measurement
+        measurement = jnp.array([msg.pose.position.x,
+                                 msg.pose.position.y,
+                                 msg.pose.position.z])
 
+        # Update TGPR with new measurement
+        self.tgpr.pushback_measurements(measurement)
+        self.get_logger().info(f'New measurement received: {measurement}')
 
 def main(args=None):
     rclpy.init(args=args)

@@ -44,8 +44,7 @@ services:
       - ROS_DOMAIN_ID=42
       - TURTLEBOT3_MODEL=burger
     command: bash -lc "tail -f /dev/null"
-    networks:
-      - rosnet
+    network_mode: "host"
     deploy:
       resources:
         reservations:
@@ -64,15 +63,16 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
       - DISPLAY=${DISPLAY}
-      - ROS_DOMAIN_ID=42
+      - ROS_DOMAIN_ID=0
       - TURTLEBOT3_MODEL=burger
     command: bash -lc "tail -f /dev/null"
     hostname: ros-dev
     user: "operator"
-    networks:
-      - rosnet
+    network_mode: "host"
     deploy:
       resources:
+        limits:
+          memory: 8g
         reservations:
           devices:
             - driver: nvidia
