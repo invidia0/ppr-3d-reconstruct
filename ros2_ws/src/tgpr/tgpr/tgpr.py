@@ -1,7 +1,8 @@
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import block_diag, solve
-import rclpy
+
+from functools import partial
 
 class TGPR:
     def __init__(self,
@@ -11,70 +12,95 @@ class TGPR:
                  C_single: jnp.ndarray = jnp.eye(3),
                  K0: jnp.ndarray = jnp.eye(3)*0.01,
                  R: jnp.ndarray = jnp.eye(3)*0.01,
-                 dt: float = 0.1):
+                 dt: float = 0.1,
+                 key: jax.random.PRNGKey = jax.random.PRNGKey(0)):
         """
         Args:
             dataset_history (int): Number of past timesteps to consider in the dataset
         """
         self.test = jnp.array([1.0, 2.0, 3.0])
         self._max_hist = dataset_history
-        self._measurements = jnp.empty((0, 3))  # Assuming 3D poses (x, y, z)
+        self._measurements = jnp.empty((0, 3))  # Assuming 3D poses (x, y, theta)
         self._current_pose = jnp.array([0.0, 0.0, 0.0])
-        self.Qc = jnp.diag([sigma_v**2, sigma_w**2])
+        self.Qc = jnp.diag(jnp.array([sigma_v**2, sigma_w**2]))  # Continuous-time process noise covariance
         self.C_single = C_single
         self.K0 = K0 # Initial covariance
-        self.R = R # Measurement noise covariance
         self.dt = dt
+        self.x_bar_traj = jnp.empty((0, 3))
+        self.u_est = jnp.empty((0, 2))
+        self.key = key
+        self._x_traj = jnp.empty((0, 3))
+        self._k_traj = jnp.empty((0, 3, 3))
+
+        self.R = R # Measurement noise covariance
+        R_inv = jnp.kron(jnp.eye(self._max_hist), jnp.linalg.inv(self.R))
+        self.R_inv = R_inv
+        C_big = jnp.kron(jnp.eye(self._max_hist), self.C_single)
+        self.C_big = C_big
+
+
+    @property
+    def dataset_size(self) -> int:
+        return self._measurements.shape[0]
+
+
+    @property
+    def measurements(self) -> jnp.ndarray:
+        return self._measurements
+
+
+    @property
+    def prior(self) -> jnp.ndarray:
+        return self.x_bar_traj
+
+
+    @measurements.setter
+    def measurements(self, value: jnp.ndarray):
+        self._measurements = value
+
+    
+    @property
+    def predicted_trajectory(self) -> jnp.ndarray:
+        return self._x_traj
+
+
+    @property
+    def predicted_covariances(self) -> jnp.ndarray:
+        return self._k_traj
 
 
     def predict_trajectory(self, dt: float, pred_horizon: int) -> jnp.ndarray:
-        self.T = self._measurements.shape[0]
-        self.M = self._measurements.shape[0] - 1  # Number of control inputs available
         self._current_pose = self._measurements[-1, :]
 
         self.u_est = self._estimate_u(self._measurements, dt)
-        x_bar_traj = self.prior_rollout(self._current_pose, self.u_est, dt)
-        x_bar = x_bar_traj.reshape(-1)
+        self.x_bar_traj = self.prior_rollout(self._measurements[0, :], self.u_est, dt)
+        x_bar = self.x_bar_traj.reshape(-1)
 
-        # ---- Build Phi_list and Q_list with vmap ----
-        # x_nom[i] is x at time i, u_nom[i] is control between i and i+1
-        x_nom = x_bar_traj          # (M+1, 3)
-        u_nom = self.u_est          # (M, 2)
-
-        def phi_fun(x, u):
-            return self._Phi_unicycle(x, u, dt)  # (3,3)
-
-        def q_fun(x):
-            return self._Q_unicycle(x, dt, self.Qc)  # (3,3)
-
-        Phi_list = jax.vmap(phi_fun)(x_nom[:-1], u_nom)  # (M, 3, 3)
-        Q_list   = jax.vmap(q_fun)(x_nom[:-1])           # (M, 3, 3)
+        Phi_list = jax.vmap(lambda x, u: self._Phi_unicycle(x, u, dt))(self.x_bar_traj[:-1], self.u_est)
+        Q_list   = jax.vmap(lambda x: self._Q_unicycle(x, dt, self.Qc))(self.x_bar_traj[:-1])        
 
         A_lift = self._A_lift(Phi_list)
         Q_big = block_diag(self.K0, *Q_list)
 
-        
-        R_inv = jnp.kron(jnp.eye(self.T), jnp.linalg.inv(self.R))
-        C_big = jnp.kron(jnp.eye(self.T), self.C_single)
-
         K = A_lift @ Q_big @ A_lift.T + jnp.eye(A_lift.shape[0]) * 1e-8
-        K_inv = jnp.linalg.inv(K)
+        K_inv = solve(K, jnp.eye(K.shape[0], dtype=K.dtype))
 
         y = self._measurements.reshape(-1)
-        x_est_flat, Sigma_post = self._gpr(K_inv, C_big, R_inv, x_bar, y)
+        x_est_flat, H = self._gpr(K_inv, self.C_big, self.R_inv, x_bar, y)
         x_est = x_est_flat.reshape(-1, 3)
-
-        self.K0 = Sigma_post[ -3:, -3:]
+        
+        H = H[-3:, -3:]
+        self.K0 = solve(H, jnp.eye(H.shape[0], dtype=H.dtype))
         self._current_pose = x_est[-1, :]
 
-        # Prediction
-        # Average last predicted inputs
-        u_last = jnp.mean(self.u_est[-3:], axis=0)
-        x_pred, u_pred = self._predict(self._current_pose, u_last, self.K0, dt, pred_horizon)
+        k = jnp.minimum(self.u_est.shape[0], 3)
+        u_last = jnp.mean(self.u_est[-k:], axis=0)
+        x_traj, k_traj = self._predict(self._current_pose, u_last, self.K0, dt, pred_horizon)
+        
+        self._x_traj = x_traj
+        self._k_traj = k_traj
 
-        return x_pred, u_pred
-
-
+    @partial(jax.jit, static_argnums=(0, 5,))
     def _predict(self, x_last: jnp.ndarray, u_last: jnp.ndarray, K_last: jnp.ndarray, dt: float, pred_horizon: int) -> jnp.ndarray:
         """Roll out the GP prior forward over a fixed dt horizon.
         Uses the constant-velocity SDE prior.
@@ -115,6 +141,7 @@ class TGPR:
         return x_traj, K_traj
 
 
+    @partial(jax.jit, static_argnums=(0,))
     def _gpr(self, K_inv: jnp.ndarray, C_big: jnp.ndarray, R_inv: jnp.ndarray, x_bar: jnp.ndarray, measurements: jnp.ndarray) -> jnp.ndarray:
         """Perform Gaussian Process Regression to refine trajectory predictions.
 
@@ -131,8 +158,8 @@ class TGPR:
         b = K_inv @ x_bar  + C_big.T @ R_inv @ measurements
         
         x_est = solve(H, b) # shape: (N*T,)
-        Sigma_post = jnp.linalg.inv(H)
-        return x_est, Sigma_post
+
+        return x_est, H
 
 
     def prior_rollout(self, x0: jnp.ndarray, u_seq: jnp.ndarray, dt: float) -> jnp.ndarray:
@@ -151,23 +178,12 @@ class TGPR:
         def body_fun(i, x_bar):
             x_prev = x_bar[i - 1, :]
             u_curr = u_seq[i - 1, :]
-            x_next = self.F_unicycle(x_prev, u_curr, dt)
+            x_next = self._F_unicycle(x_prev, u_curr, dt)
             x_bar = x_bar.at[i, :].set(x_next)
             return x_bar
 
         x_bar = jax.lax.fori_loop(1, x_bar.shape[0], body_fun, x_bar)
         return x_bar
-
-
-    def pushback_measurements(self, pose: jnp.ndarray):
-        """Add a new measurement(s) to the history.
-
-        Args:
-            pose (jnp.ndarray): New measurement(s) of shape (3,)
-        """
-        self._measurements = jnp.vstack([self._measurements, pose])
-        if self._measurements.shape[0] > self._max_hist:
-            self._measurements = self._measurements.at[1:, :].get()
 
 
     def _Q_unicycle(self, x_nom: jnp.ndarray, dt: float, Qc: jnp.ndarray) -> jnp.ndarray:
@@ -209,50 +225,35 @@ class TGPR:
         return Phi
 
 
-    def _A_lift(Phi_input: list[jnp.ndarray]) -> jnp.ndarray:
+    @partial(jax.jit, static_argnums=(0,))
+    def _A_lift(self, Phi: jnp.ndarray) -> jnp.ndarray:
         """
-        Construct the lifted state transition matrix for multiple timesteps.
-
-        Args:
-            Phi_input (list[jnp.ndarray]): List of state transition Jacobians Φ_k
-                of shape (N, N), mapping x_k -> x_{k+1}.
-                Length = M (number of timesteps).
-
-        Returns:
-            jnp.ndarray: Lifted state transition matrix of shape (N*M, N*M),
-                where block (i, j) (for i >= j) is Φ_i @ ... @ Φ_{j+1}.
-                Diagonal blocks are Φ_i, just like in your original code.
+        Phi_input: length M, each (N,N), Phi[k] maps x_k -> x_{k+1}
+        Returns: A_lift of shape ((M+1)*N, (M+1)*N)
         """
-        # Stack into a single array for JAX
-        Phi = jnp.stack(Phi_input) # shape: (M, N, N)
         M, N, _ = Phi.shape
+        I = jnp.eye(N, dtype=Phi.dtype)
 
-        # We'll store block matrix in shape (M, M, N, N)
-        # Then reshape to (N*M, N*M) at the end
-        A_blocks = jnp.zeros((M, M, N, N))
+        # blocks: (M+1, M+1, N, N)
+        A = jnp.zeros((M + 1, M + 1, N, N), dtype=Phi.dtype)
 
-        A_blocks = A_blocks.at[0, 0].set(Phi[0])
+        # Set diagonal to I
+        A = A.at[jnp.arange(M + 1), jnp.arange(M + 1)].set(I)
 
-        def outer_body(i, A_blocks):
-            """Build row i from row i-1 using recursion A(i, j) = Φ_i @ A(i-1, j)."""
-            Phi_i = Phi[i]
+        def outer(i, A_blocks):
+            # i is state index (1..M)
+            Phi_im1 = Phi[i - 1]  # transition from i-1 -> i
 
-            # Diagonal block A(i, i) = Φ_i
-            A_blocks = A_blocks.at[i, i].set(Phi_i)
+            def inner(j, A_blocks):
+                # A[i,j] = Phi_{i-1} @ A[i-1,j]
+                return A_blocks.at[i, j].set(Phi_im1 @ A_blocks[i - 1, j])
 
-            # For j < i: A(i, j) = Φ_i @ A(i-1, j)
-            def inner_body(j, A_blocks):
-                Aij = Phi_i @ A_blocks[i - 1, j]
-                return A_blocks.at[i, j].set(Aij)
+            return jax.lax.fori_loop(0, i, inner, A_blocks)
 
-            A_blocks = jax.lax.fori_loop(0, i, inner_body, A_blocks)
-            return A_blocks
+        A = jax.lax.fori_loop(1, M + 1, outer, A)
 
-        # Fill rows 1..M-1
-        A_blocks = jax.lax.fori_loop(1, M, outer_body, A_blocks)
-        # Convert (M, M, N, N) → (N*M, N*M)
-        A_lift = A_blocks.transpose(0, 2, 1, 3).reshape(M * N, M * N)
-        return A_lift
+        # (M+1, M+1, N, N) -> ((M+1)*N, (M+1)*N)
+        return A.transpose(0, 2, 1, 3).reshape((M + 1) * N, (M + 1) * N)
 
 
     def _F_unicycle(self, x: jnp.ndarray, u: jnp.ndarray, dt: float) -> jnp.ndarray:
@@ -277,34 +278,12 @@ class TGPR:
 
 
     def _estimate_u(self, poses: jnp.ndarray, dt: float) -> jnp.ndarray:
-        """Estimate control inputs (v, w) from pose history.
+        dxy = poses[1:, 0:2] - poses[:-1, 0:2]
+        ds = jnp.linalg.norm(dxy, axis=1)
 
-        Args:
-            poses (jnp.ndarray): Pose history of shape (N, 3)
-            dt (float): Time step between poses
-        Returns:
-            jnp.ndarray: Estimated control inputs of shape (N-1, 2)
-        """
+        dtheta = poses[1:, 2] - poses[:-1, 2]
+        dtheta = (dtheta + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
 
-        u_list = jnp.empty((0, 2))
-
-        def body_fun(i, u_list):
-            p_prev = poses[i - 1]
-            p_curr = poses[i]
-
-            dx = p_curr[0] - p_prev[0]
-            dy = p_curr[1] - p_prev[1]
-            dtheta = p_curr[2] - p_prev[2]
-            dtheta = (dtheta + jnp.pi) % (2 * jnp.pi) - jnp.pi
-            ds = jnp.hypot(dx, dy)
-
-            v = ds / dt
-            w = dtheta / dt
-
-            u = jnp.array([v, w])
-            u_list = jnp.vstack([u_list, u])
-            return u_list
-
-        u_list = jax.lax.fori_loop(1, poses.shape[0], body_fun, u_list)
-        return u_list
-    
+        v = ds / dt
+        w = dtheta / dt
+        return jnp.stack([v, w], axis=1)  # (N-1, 2)

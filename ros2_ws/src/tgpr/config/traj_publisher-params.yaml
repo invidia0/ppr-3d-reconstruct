@@ -1,7 +1,9 @@
 traj_publisher:
   ros__parameters:
+    simulation_mode: true
     pose_topic: 'vrpn_mocap/TB1/pose'
-    cmd_vel_topic: 'TB1/cmd_vel'
+    cmd_vel_topic: '/cmd_vel'
+    measurement_topic: '/pose_measurements'
     figure_8_scale: 1.5
     kp_v: 1.0
     ki_v: 0.0
@@ -10,3 +12,4 @@ traj_publisher:
     ki_omega: 0.0
     max_angular_velocity: 1.0  
     pure_pursuit_lookahead: 0.5
+    measurement_publish_rate: 10.0 # Hz

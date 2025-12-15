@@ -17,6 +17,11 @@ import numpy as np
 
 from tgpr.pi_controller import PI
 
+import os
+
+os.environ['RCUTILS_CONSOLE_OUTPUT_FORMAT'] = '[{severity}] ({name}): {message}'
+os.environ['RCUTILS_COLORIZED_OUTPUT'] = '1'
+
 class TrajPublish(Node):
     def __init__(self):
         super().__init__('traj_publisher')
@@ -24,8 +29,10 @@ class TrajPublish(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
+                ('simulation_mode', True),
                 ('pose_topic', '/pose'),
                 ('cmd_vel_topic', '/cmd_vel'),
+                ('measurement_topic', '/pose_measurement'),
                 ('figure_8_scale', 3.0),
                 ('kp_v', 3.0),
                 ('ki_v', 0.0),
@@ -33,12 +40,14 @@ class TrajPublish(Node):
                 ('kp_omega', 3.0),
                 ('ki_omega', 0.0),
                 ('max_angular_velocity', 1.0),
-                ('pure_pursuit_lookahead', 0.5)
+                ('pure_pursuit_lookahead', 0.5),
+                ('measurement_publish_rate', 10.0)
             ]
         )
-
+        self.simulation_mode = self.get_parameter('simulation_mode').get_parameter_value().bool_value
         self.pose_topic = self.get_parameter('pose_topic').get_parameter_value().string_value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').get_parameter_value().string_value
+        self.measurement_topic = self.get_parameter('measurement_topic').get_parameter_value().string_value
         self.figure_8_scale = self.get_parameter('figure_8_scale').get_parameter_value().double_value
         self.kp_v = self.get_parameter('kp_v').get_parameter_value().double_value
         self.ki_v = self.get_parameter('ki_v').get_parameter_value().double_value
@@ -47,16 +56,12 @@ class TrajPublish(Node):
         self.ki_omega = self.get_parameter('ki_omega').get_parameter_value().double_value
         self.max_angular_velocity = self.get_parameter('max_angular_velocity').get_parameter_value().double_value
         self.pp_lookahead = self.get_parameter('pure_pursuit_lookahead').get_parameter_value().double_value
+        self.measurement_publish_rate = self.get_parameter('measurement_publish_rate').get_parameter_value().double_value
 
-        # _dataset_history = self.get_parameter('dataset_history').get_parameter_value().integer_value
-
-        # System initialization
-        # self._f8_traj = self.figure_8_trajectory(100, scale=self.figure_8_scale)
-        self._current_position = np.array([0.0, 0.0])
-        self._current_yaw = 0.0
+        self._current_pose = PoseStamped()
 
         self._f8_traj = self.figure_8_trajectory(100, scale=self.figure_8_scale)
-        self._f8_marker_array, self._robot_marker = self._build_markers()
+        self._f8_marker_array = self._build_markers()
         self._next_point = np.array([self._f8_traj[0][0], self._f8_traj[1][0]])
         self._traj_counter = 0
         self._PI_vel = PI(kp=self.kp_v, ki=self.ki_v)
@@ -64,28 +69,33 @@ class TrajPublish(Node):
 
         # Subs
         self._pose_sub = self.create_subscription(
-            PoseStamped,
-            self.pose_topic,
+            Odometry if self.simulation_mode else PoseStamped,
+            '/odom' if self.simulation_mode else self.pose_topic,
             self.control_callback,
             qos_profile=qos_profile_sensor_data
         )
 
         # Timers
-        timer_period = 0.1
-        self.get_logger().info("Creating f8 timer")
-        self._f8_traj_timer = self.create_timer(timer_period, self.f8_traj_callback)
-        self.get_logger().info("Timer created")
+        _marker_traj_period = 0.1
+        self._f8_traj_timer = self.create_timer(_marker_traj_period, self.f8_traj_callback)
+
+        ## Timer for measurements publishing
+        _measurement_period = 1.0 / self.measurement_publish_rate
+        self._measurement_timer = self.create_timer(_measurement_period, self._meaurement_publisher)
 
         # Pubs
         self._f8_traj_pub = self.create_publisher(MarkerArray, 'f8_trajectory', 1)
-        self._robot_marker_pub = self.create_publisher(Marker, 'robot_marker', 1)
+        self._odom_world_pub = self.create_publisher(Odometry, 'odom_world', 1)
         self._cmd_vel_pub = self.create_publisher(TwistStamped, self.cmd_vel_topic, 1)
+        self._measurement_pub = self.create_publisher(PoseStamped, self.measurement_topic, 1)
 
         # Message holders
         self._cmd_vel_msg = TwistStamped()
 
         # Last time
         self._last_time = self.get_clock().now()
+
+        self.get_logger().info('✅️ Trajectory Publisher Node has been started.')
 
 
     def figure_8_trajectory(self, num_points, scale=1.0):
@@ -100,6 +110,10 @@ class TrajPublish(Node):
         x = radius * np.cos(t)
         y = radius * np.sin(t)
         return x, y
+    
+
+    def _meaurement_publisher(self):
+        self._measurement_pub.publish(self._current_pose)
 
 
     def _build_markers(self) -> MarkerArray:
@@ -123,36 +137,20 @@ class TrajPublish(Node):
             marker.pose.orientation.z = 0.0
             marker.pose.orientation.w = 1.0
 
-            marker.scale.x = 0.1
-            marker.scale.y = 0.1
-            marker.scale.z = 0.1
-
+            marker.scale.x = 0.05
+            marker.scale.y = 0.05
+            marker.scale.z = 0.05
+            
             marker.color.a = 1.0
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
+            marker.color.r = 0.62
+            marker.color.g = 0.62
+            marker.color.b = 0.62
 
             marker.lifetime = Duration(sec=0, nanosec=0)
             marker_array.markers.append(marker)
 
-        robot_marker = Marker()
-        robot_marker.header.frame_id = "world"
-        robot_marker.ns = "robot"
-        robot_marker.id = len(marker_array.markers) + 1
-        robot_marker.type = Marker.ARROW
-        robot_marker.action = Marker.ADD
+        return marker_array
 
-        robot_marker.scale.x = 0.4
-        robot_marker.scale.y = 0.1
-        robot_marker.scale.z = 0.1
-
-        robot_marker.color.a = 1.0
-        robot_marker.color.r = 0.0
-        robot_marker.color.g = 0.0
-        robot_marker.color.b = 1.0
-        robot_marker.lifetime = Duration(sec=0, nanosec=0)
-
-        return marker_array, robot_marker
 
     def f8_traj_callback(self):
         now = self.get_clock().now().to_msg()
@@ -161,19 +159,40 @@ class TrajPublish(Node):
             if marker.id == self._traj_counter:
                 marker.color.r = 1.0
                 marker.color.g = 0.0
+                marker.color.b = 0.0
             else:
-                marker.color.r = 0.0
-                marker.color.g = 1.0
+                marker.color.r = 0.62
+                marker.color.g = 0.62
+                marker.color.b = 0.62
         self._f8_traj_pub.publish(self._f8_marker_array)
 
 
-    def _publish_robot_marker(self, msg: PoseStamped):
-        self._robot_marker.header.stamp = self.get_clock().now().to_msg()
-        # position & orientation from mocap
-        self._robot_marker.pose = msg.pose
-        self._robot_marker_pub.publish(self._robot_marker)
+    def control_callback(self, msg):
+        if self.simulation_mode:
+            # In simulation mode, msg is of type Odometry
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'world'
+            self._odom_world_pub.publish(msg)
+        else:
+            # Convert PoseStamped to Odometry and publish
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'world'
+            self._odom_world_pub.publish(Odometry(
+                header=msg.header,
+                pose=Odometry.Pose(msg.pose),
+                twist=Odometry.Twist()
+            ))
 
-    def control_callback(self, msg: PoseStamped):
+        if self.simulation_mode:
+            # In simulation mode, msg is of type Odometry
+            pose = msg.pose.pose
+            orientation = pose.orientation
+            msg = PoseStamped()
+            msg.header = msg.header
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.pose.position = pose.position
+            msg.pose.orientation = orientation
+
         now = self.get_clock().now()
         dt = (now - self._last_time).nanoseconds * 1e-9
         self._last_time = now
@@ -187,25 +206,7 @@ class TrajPublish(Node):
             msg.pose.position.z
         ])
 
-        # Advance along trajectory while inside lookahead
-        # while True:
-        #     dx_look = self._next_point[0] - position[0]
-        #     dy_look = self._next_point[1] - position[1]
-        #     dist_look = (dx_look**2 + dy_look**2)**0.5
-
-        #     if dist_look < self.pp_lookahead:
-        #         self.get_logger().info("Advancing to next trajectory point")
-        #         self._traj_counter += 1
-        #         if self._traj_counter >= len(self._f8_traj[0]):
-        #             self._traj_counter = 0
-        #         self._next_point = np.array([
-        #             self._f8_traj[0][self._traj_counter],
-        #             self._f8_traj[1][self._traj_counter]
-        #         ])
-        #     else:
-        #         break
         if np.linalg.norm(self._next_point - position[0:2]) < self.pp_lookahead:
-            self.get_logger().info("Advancing to next trajectory point")
             self._traj_counter += 1
             if self._traj_counter >= len(self._f8_traj[0]):
                 self._traj_counter = 0
@@ -233,16 +234,6 @@ class TrajPublish(Node):
         v_cmd = self._PI_vel.control(error, dt=dt, cap=self.max_velocity)
         omega_cmd = self._PI_omega.control(heading_error, dt=dt, cap=self.max_angular_velocity)
 
-        # # choose a comfortable forward speed
-        # v_cmd = min(self.max_velocity, 0.15)
-
-        # # pure pursuit curvature
-        # Ld = max(self.pp_lookahead, 0.1)
-        # omega_cmd = 2.0 * v_cmd * np.sin(heading_error) / Ld
-
-        # # saturate
-        # omega_cmd = np.clip(omega_cmd, -self.max_angular_velocity, self.max_angular_velocity)
-
         if abs(heading_error) > np.pi / 3:
             v_cmd *= 0.3
         if abs(heading_error) > np.pi / 2:
@@ -250,11 +241,6 @@ class TrajPublish(Node):
         if error < 0.01:
             v_cmd = 0.0
             omega_cmd = 0.0
-
-        self.get_logger().info(
-            f"Error: {error:.3f}, Heading error: {heading_error:.3f}, "
-            f"v_cmd: {v_cmd:.3f}, omega_cmd: {omega_cmd:.3f}"
-        )
 
         self._cmd_vel_msg.header.stamp = now.to_msg()
         self._cmd_vel_msg.twist.linear.x = float(v_cmd)
@@ -264,8 +250,12 @@ class TrajPublish(Node):
         self._cmd_vel_msg.twist.angular.y = 0.0
         self._cmd_vel_msg.twist.angular.z = float(omega_cmd)
 
-        self._publish_robot_marker(msg)
         self._cmd_vel_pub.publish(self._cmd_vel_msg)
+
+        self._current_pose = msg
+
+        self.get_logger().info(f'🚙 Control sent to actuators')
+
 
     def stop_robot(self):
         self.get_logger().info("Stopping robot...")
